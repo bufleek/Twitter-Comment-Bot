@@ -1,0 +1,6 @@
+{
+    "headless": true,
+    "searchTag": "#HashTag || SearchTag",
+    "reply": "Reply Message",
+    "limit": 10
+}

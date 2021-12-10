@@ -1,0 +1,1 @@
+export const username: string = "Your username";
