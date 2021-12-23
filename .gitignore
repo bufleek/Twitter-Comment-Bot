@@ -1,5 +1,6 @@
 node_modules
 dist/tmp
 data/tweet_reply_shots
+data/errors
 data/*.xlsx
 *.zip

@@ -1,1 +1,1 @@
-export const username: string = "Your username";
+export const username: string = "no_ns_en_se";

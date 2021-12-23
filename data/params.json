@@ -1,6 +1,13 @@
 {
     "headless": true,
-    "searchTag": "#HashTag || SearchTag",
-    "reply": "Reply Message",
-    "limit": 10
+    "searchTag": "#AI",
+    "reply": [
+        "Reply 1",
+        "Reply 2",
+        "Reply 3",
+        "Reply 4",
+        "Reply 5",
+        "Reply 6"
+    ],
+    "limit": 0
 }

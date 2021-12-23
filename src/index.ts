@@ -6,21 +6,30 @@ import exceljs from 'exceljs';
 let workbook = new exceljs.Workbook();
 let worksheet: exceljs.Worksheet;
 
-let reply = "";
+let reply: string[] = [];
 let tweets: Tweet[] = [];
 let tweetsReplied: string[] = [];
+let failedReplies: string[] = [];
 let remaininingTweets: Tweet[] = [];
 let page: puppeteer.Page;
 let searchTag = "";
 let replyLimit = 10;
 let browser: puppeteer.Browser;
 let tweetData: TweetData[] = [];
+let params = {
+    headless: false,
+    searchTag: "",
+    reply: "",
+    limit: 10
+};
 
 let repliesDir = "./data/tweet_reply_shots";
 const dataDir = "./dist/tmp/data";
 const excelSheetDir = "./data";
 const paramsFile = "./data/params.json";
-let tweetsFileName = "/tweets.xlsx";
+const tweetsFileName = "/tweets.xlsx";
+const errorDir = "./data/errors/images"
+const errorsFile = "./data/errors/logs.txt"
 
 class TweetData {
     tweet: string;
@@ -43,11 +52,15 @@ let getReply = async (url: string): Promise<string> => {
         await conversationPage.goto("https://twitter.com" + url, { waitUntil: "networkidle2" });
         await sleepFor(1000, 2000);
         await conversationPage.waitForSelector("div[data-testid='tweetTextarea_0']")
-            .catch(async () => { })
+            .catch(async (e) => {
+                failedReplies.push(url);
+                console.log(e.message);
+                await writeErrorLog(conversationPage, e.toString());
+            })
             .then(async () => {
                 await conversationPage.hover("div[data-testid='tweetTextarea_0']")
                 await conversationPage.focus("div[data-testid='tweetTextarea_0']")
-                await conversationPage.keyboard.type(reply);
+                await conversationPage.keyboard.type(chooseRandomReply());
                 await sleepFor(3000, 5500);
                 await conversationPage.click("div[data-testid='tweetButtonInline']");
                 let tweeted = false;
@@ -57,8 +70,11 @@ let getReply = async (url: string): Promise<string> => {
                         let el = await conversationPage.$(selector);
                         if (el != null || tweeted) {
                             tweeted = true;
-                            if(el != null){
+                            if (el != null && selector === "div[data-testid='toast']") {
                                 tweetsReplied.push(url);
+                            } else if (el != null) {
+                                failedReplies.push(url);
+                                console.log("A similar reply exists");
                             }
                             rsl(null);
                         } else {
@@ -75,13 +91,23 @@ let getReply = async (url: string): Promise<string> => {
                     let commentLink = await commentLinks.find(it => it?.includes("status") && it.includes(username));
                     if (commentLink != null) {
                         await comment.hover();
+                        let boundingBox = await (await conversationPage.$("main[role='main']"))?.boundingBox();
+                        let screenshotWidth = boundingBox?.width ?? 1280;
+                        let replyBoundingBox = await comment.boundingBox();
+                        let screenshotHeight = ((replyBoundingBox?.height ?? 0) + (replyBoundingBox?.y ?? 0))
                         let replyImagePath = repliesDir + "/" + commentLink?.replace(/\//g, "_") + ".png";
                         await (await conversationPage.$("main[role='main']"))?.screenshot({
                             path: replyImagePath,
-                            fullPage: false
+                            fullPage: false,
+                            clip: {
+                                x: boundingBox?.x ?? 0,
+                                y: 0,
+                                width: screenshotWidth,
+                                height: screenshotHeight
+                            }
                         });
                         console.log("reply found")
-                        let data = {tweet: "https://twitter.com" + url, reply: "https://twitter.com" + commentLink, image: replyImagePath}
+                        let data = { tweet: "https://twitter.com" + url, reply: "https://twitter.com" + commentLink, image: replyImagePath }
 
                         await workbook.xlsx.writeFile(excelSheetDir + tweetsFileName);
                         worksheet.addRow(data);
@@ -90,11 +116,42 @@ let getReply = async (url: string): Promise<string> => {
                     }
                 }
             })
-            .catch((e) => { console.log(e) });
+            .catch(async (e) => {
+                console.log(e)
+                await writeErrorLog(conversationPage, e.toString());
+            });
 
         await conversationPage.close();
         resolve("null");
     });
+}
+
+function chooseRandomReply(): string {
+    return reply[Math.floor(Math.random() * reply.length)]
+}
+
+let writeErrorLog = async (page: puppeteer.Page, message: string) => {
+    let time = new Date().getTime();
+    let errorImage = errorDir + "/" + time.toString() + ".png";
+    await page.screenshot({
+        path: errorImage,
+        fullPage: true,
+    });
+    let error = {
+        id: time,
+        image: errorImage,
+        params,
+        repliedTweets: tweetsReplied.length,
+        failedReplies: failedReplies.length,
+        isLoggedIn: await isUserLoggedIn(),
+        url: await page.url(),
+        message
+    }
+    if (!fs.existsSync(errorsFile)) {
+        fs.writeFileSync(errorsFile, JSON.stringify(error));
+    } else {
+        fs.appendFileSync(errorsFile, "\n\n" + JSON.stringify(error));
+    }
 }
 
 class Tweet {
@@ -111,13 +168,13 @@ class Tweet {
             console.log("replying to tweet ", this.id);
             await getReply(this.id)
                 .then(async () => {
-                    // tweetsReplied.push(this.id);
                     remaininingTweets = remaininingTweets.filter(it => it.id != this.id);
                     await sleepFor(100, 1000);
                 })
-                .catch((e) => {
+                .catch(async (e) => {
                     remaininingTweets = remaininingTweets.filter(it => it.id != this.id);
                     console.log(e)
+                    await writeErrorLog(page, e.toString());
                 }).finally(() => {
                     console.log("Tweets replied: ", tweetsReplied.length);
                 });
@@ -138,7 +195,7 @@ let sleepFor = async (min: number, max: number) => {
 let login = async () => {
     await page.goto("https://twitter.com/login", { waitUntil: "networkidle2" });
     await sleepFor(1000, 2000);
-    if(await page.url() === "https://twitter.com/home"){
+    if (await page.url() === "https://twitter.com/home") {
         console.log("Already logged in");
         return;
     }
@@ -153,15 +210,16 @@ let login = async () => {
                 await sleepFor(1000, 2000);
                 await page.waitForNavigation();
             })
-            .catch((error) => {
-                console.log("Already logged in")
+            .catch(async (error) => {
+                console.log("Login Error");
+                console.log(error);
+                await writeErrorLog(page, error.toString());
             });
     }
 }
 
 let isUserLoggedIn = async (): Promise<boolean> => {
     let allLinks = await page.$$eval("a[role='link']", nodes => nodes.map(node => node.textContent));
-    console.log(allLinks);
     return new Promise((resolve, reject) => {
         if (allLinks != null && (allLinks.find(it => it?.toLocaleLowerCase() == "log in") != null || allLinks.find(it => it?.toLocaleLowerCase() == "sign up") != null)) {
             console.log("Not logged in");
@@ -170,20 +228,6 @@ let isUserLoggedIn = async (): Promise<boolean> => {
         else {
             console.log("Logged in")
             resolve(true);
-        }
-    });
-}
-
-let checkLoginState = async () => {
-    await isUserLoggedIn().then(async (isLoggedIn: boolean) => {
-        if (!isLoggedIn) {
-            await login()
-                .catch(async () => {
-                    await gotoTweets();
-                })
-                .then(async () => {
-                    await gotoTweets();
-                });
         }
     });
 }
@@ -202,7 +246,7 @@ let replyTweets = async () => {
         }
 
         if (id != null) {
-            if (tweetsReplied.find(it => it == id) == null) {
+            if (tweetsReplied.find(it => it == id) == null && failedReplies.find(it => it == id) == null) {
                 tweets.push(new Tweet(id, pageTweet))
             }
         }
@@ -235,26 +279,21 @@ let gotoTweets = async () => {
     await replyTweets();
 }
 
-let writeDataToSheet = () => {
-    let fileName = excelSheetDir + tweetsFileName;
-    let ws = XLSX.utils.json_to_sheet(tweetData)
-    let wb;
-    try { wb = XLSX.readFile(fileName); } catch { wb = XLSX.utils.book_new(); }
-    XLSX.utils.book_append_sheet(wb, ws, searchTag);
-    XLSX.writeFile(wb, fileName);
-}
-
 let main = async () => {
     let paramsStr = fs.readFileSync(paramsFile, "utf-8");
-    let params = JSON.parse(paramsStr);
+    params = JSON.parse(paramsStr);
 
-    if (params.searchTag == null || params.reply == null || params.searchTag.trim().length == 0 || params.reply.trim().length == 0) {
+    if (params.searchTag == null || params.reply == null || params.searchTag.trim().length == 0) {
         console.log("Required parameters are missing");
         return;
     }
 
     searchTag = params.searchTag;
-    reply = params.reply;
+    reply = JSON.parse(JSON.stringify(params.reply));
+    if (reply.length == 0) {
+        console.log("No replies given");
+        return;
+    }
     try { replyLimit = params.limit; } catch { replyLimit = 0 }
 
     if (!fs.existsSync(dataDir)) {
@@ -268,6 +307,10 @@ let main = async () => {
     if (!fs.existsSync(excelSheetDir)) {
         fs.mkdirSync(excelSheetDir, { recursive: true })
     }
+
+    if (!fs.existsSync(errorDir)) {
+        fs.mkdirSync(errorDir, { recursive: true })
+    }
     if (!fs.existsSync(excelSheetDir + tweetsFileName)) {
         worksheet = workbook.addWorksheet(searchTag);
     } else {
@@ -275,9 +318,9 @@ let main = async () => {
         worksheet = workbook.worksheets.find(it => it.name == searchTag) ?? workbook.addWorksheet(searchTag);
     }
     worksheet.columns = [
-        {header: 'Tweet Link', key: 'tweet', width: 20},
-        {header: 'Reply Link', key: 'reply', width: 20},
-        {header: 'Image Path', key: 'image', width: 20},
+        { header: 'Tweet Link', key: 'tweet', width: 20 },
+        { header: 'Reply Link', key: 'reply', width: 20 },
+        { header: 'Image Path', key: 'image', width: 20 },
     ];
 
     browser = await puppeteer.launch({
@@ -291,12 +334,35 @@ let main = async () => {
         await gotoTweets();
     }).catch((e) => { console.log(e) })
         .finally(async () => {
-            // if (tweetData.length != 0) {
-            //     writeDataToSheet()
-            // }
             await workbook.xlsx.writeFile(excelSheetDir + tweetsFileName);
             await page.close();
             await browser.close();
         });
 }
+
+// let takeScreenshot = async () => {
+//     await page.goto("https://twitter.com/ItsJumahK/status/1473548820508295173", { waitUntil: 'networkidle2' });
+//     await page.waitForSelector('main[role="main"]');
+//     await page.hover('article[data-testid="tweet"]');
+//     let allTweetArticles = await page.$$('article[data-testid="tweet"]');
+//     if (allTweetArticles.length > 0) {
+//         let tweet = allTweetArticles[0];
+//         console.log(allTweetArticles.length);
+//         let boundingBox = await tweet?.boundingBox();
+//         let screenshotWidth = boundingBox?.width ?? 1280;
+//         let replyBoundingBox = await allTweetArticles[1].boundingBox();
+//         let screenshotHeight = ((replyBoundingBox?.height ?? 0) + (replyBoundingBox?.y ?? 0))
+//         console.log('screenshotHeight ', screenshotHeight);
+//         await (await page.$('main[role="main"]'))?.screenshot({
+//             path: './data/stest.jpg',
+//             clip: {
+//                 x: boundingBox?.x ?? 0,
+//                 y: 0,
+//                 width: screenshotWidth,
+//                 height: screenshotHeight
+//             }
+//         });
+//     }
+
+// }
 main();

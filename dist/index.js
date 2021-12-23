@@ -19,20 +19,29 @@ const XLSX = require('xlsx');
 const exceljs_1 = __importDefault(require("exceljs"));
 let workbook = new exceljs_1.default.Workbook();
 let worksheet;
-let reply = "";
+let reply = [];
 let tweets = [];
 let tweetsReplied = [];
+let failedReplies = [];
 let remaininingTweets = [];
 let page;
 let searchTag = "";
 let replyLimit = 10;
 let browser;
 let tweetData = [];
+let params = {
+    headless: false,
+    searchTag: "",
+    reply: "",
+    limit: 10
+};
 let repliesDir = "./data/tweet_reply_shots";
 const dataDir = "./dist/tmp/data";
 const excelSheetDir = "./data";
 const paramsFile = "./data/params.json";
-let tweetsFileName = "/tweets.xlsx";
+const tweetsFileName = "/tweets.xlsx";
+const errorDir = "./data/errors/images";
+const errorsFile = "./data/errors/logs.txt";
 class TweetData {
     constructor(tweet, replyLink, image) {
         this.tweet = tweet;
@@ -49,12 +58,16 @@ let getReply = (url) => __awaiter(void 0, void 0, void 0, function* () {
         yield conversationPage.goto("https://twitter.com" + url, { waitUntil: "networkidle2" });
         yield sleepFor(1000, 2000);
         yield conversationPage.waitForSelector("div[data-testid='tweetTextarea_0']")
-            .catch(() => __awaiter(void 0, void 0, void 0, function* () { }))
+            .catch((e) => __awaiter(void 0, void 0, void 0, function* () {
+            failedReplies.push(url);
+            console.log(e.message);
+            yield writeErrorLog(conversationPage, e.toString());
+        }))
             .then(() => __awaiter(void 0, void 0, void 0, function* () {
-            var _a;
+            var _a, _b, _c, _d, _e, _f;
             yield conversationPage.hover("div[data-testid='tweetTextarea_0']");
             yield conversationPage.focus("div[data-testid='tweetTextarea_0']");
-            yield conversationPage.keyboard.type(reply);
+            yield conversationPage.keyboard.type(chooseRandomReply());
             yield sleepFor(3000, 5500);
             yield conversationPage.click("div[data-testid='tweetButtonInline']");
             let tweeted = false;
@@ -64,8 +77,12 @@ let getReply = (url) => __awaiter(void 0, void 0, void 0, function* () {
                     let el = yield conversationPage.$(selector);
                     if (el != null || tweeted) {
                         tweeted = true;
-                        if (el != null) {
+                        if (el != null && selector === "div[data-testid='toast']") {
                             tweetsReplied.push(url);
+                        }
+                        else if (el != null) {
+                            failedReplies.push(url);
+                            console.log("A similar reply exists");
                         }
                         rsl(null);
                     }
@@ -83,10 +100,20 @@ let getReply = (url) => __awaiter(void 0, void 0, void 0, function* () {
                 let commentLink = yield commentLinks.find(it => (it === null || it === void 0 ? void 0 : it.includes("status")) && it.includes(secrets_1.username));
                 if (commentLink != null) {
                     yield comment.hover();
+                    let boundingBox = yield ((_a = (yield conversationPage.$("main[role='main']"))) === null || _a === void 0 ? void 0 : _a.boundingBox());
+                    let screenshotWidth = (_b = boundingBox === null || boundingBox === void 0 ? void 0 : boundingBox.width) !== null && _b !== void 0 ? _b : 1280;
+                    let replyBoundingBox = yield comment.boundingBox();
+                    let screenshotHeight = (((_c = replyBoundingBox === null || replyBoundingBox === void 0 ? void 0 : replyBoundingBox.height) !== null && _c !== void 0 ? _c : 0) + ((_d = replyBoundingBox === null || replyBoundingBox === void 0 ? void 0 : replyBoundingBox.y) !== null && _d !== void 0 ? _d : 0));
                     let replyImagePath = repliesDir + "/" + (commentLink === null || commentLink === void 0 ? void 0 : commentLink.replace(/\//g, "_")) + ".png";
-                    yield ((_a = (yield conversationPage.$("main[role='main']"))) === null || _a === void 0 ? void 0 : _a.screenshot({
+                    yield ((_e = (yield conversationPage.$("main[role='main']"))) === null || _e === void 0 ? void 0 : _e.screenshot({
                         path: replyImagePath,
-                        fullPage: false
+                        fullPage: false,
+                        clip: {
+                            x: (_f = boundingBox === null || boundingBox === void 0 ? void 0 : boundingBox.x) !== null && _f !== void 0 ? _f : 0,
+                            y: 0,
+                            width: screenshotWidth,
+                            height: screenshotHeight
+                        }
                     }));
                     console.log("reply found");
                     let data = { tweet: "https://twitter.com" + url, reply: "https://twitter.com" + commentLink, image: replyImagePath };
@@ -97,10 +124,40 @@ let getReply = (url) => __awaiter(void 0, void 0, void 0, function* () {
                 }
             }
         }))
-            .catch((e) => { console.log(e); });
+            .catch((e) => __awaiter(void 0, void 0, void 0, function* () {
+            console.log(e);
+            yield writeErrorLog(conversationPage, e.toString());
+        }));
         yield conversationPage.close();
         resolve("null");
     }));
+});
+function chooseRandomReply() {
+    return reply[Math.floor(Math.random() * reply.length)];
+}
+let writeErrorLog = (page, message) => __awaiter(void 0, void 0, void 0, function* () {
+    let time = new Date().getTime();
+    let errorImage = errorDir + "/" + time.toString() + ".png";
+    yield page.screenshot({
+        path: errorImage,
+        fullPage: true,
+    });
+    let error = {
+        id: time,
+        image: errorImage,
+        params,
+        repliedTweets: tweetsReplied.length,
+        failedReplies: failedReplies.length,
+        isLoggedIn: yield isUserLoggedIn(),
+        url: yield page.url(),
+        message
+    };
+    if (!fs_1.default.existsSync(errorsFile)) {
+        fs_1.default.writeFileSync(errorsFile, JSON.stringify(error));
+    }
+    else {
+        fs_1.default.appendFileSync(errorsFile, "\n\n" + JSON.stringify(error));
+    }
 });
 class Tweet {
     constructor(id, node) {
@@ -116,10 +173,11 @@ class Tweet {
                     remaininingTweets = remaininingTweets.filter(it => it.id != this.id);
                     yield sleepFor(100, 1000);
                 }))
-                    .catch((e) => {
+                    .catch((e) => __awaiter(this, void 0, void 0, function* () {
                     remaininingTweets = remaininingTweets.filter(it => it.id != this.id);
                     console.log(e);
-                }).finally(() => {
+                    yield writeErrorLog(page, e.toString());
+                })).finally(() => {
                     console.log("Tweets replied: ", tweetsReplied.length);
                 });
             }
@@ -153,14 +211,15 @@ let login = () => __awaiter(void 0, void 0, void 0, function* () {
             yield sleepFor(1000, 2000);
             yield page.waitForNavigation();
         }))
-            .catch((error) => {
-            console.log("Already logged in");
-        });
+            .catch((error) => __awaiter(void 0, void 0, void 0, function* () {
+            console.log("Login Error");
+            console.log(error);
+            yield writeErrorLog(page, error.toString());
+        }));
     }
 });
 let isUserLoggedIn = () => __awaiter(void 0, void 0, void 0, function* () {
     let allLinks = yield page.$$eval("a[role='link']", nodes => nodes.map(node => node.textContent));
-    console.log(allLinks);
     return new Promise((resolve, reject) => {
         if (allLinks != null && (allLinks.find(it => (it === null || it === void 0 ? void 0 : it.toLocaleLowerCase()) == "log in") != null || allLinks.find(it => (it === null || it === void 0 ? void 0 : it.toLocaleLowerCase()) == "sign up") != null)) {
             console.log("Not logged in");
@@ -171,19 +230,6 @@ let isUserLoggedIn = () => __awaiter(void 0, void 0, void 0, function* () {
             resolve(true);
         }
     });
-});
-let checkLoginState = () => __awaiter(void 0, void 0, void 0, function* () {
-    yield isUserLoggedIn().then((isLoggedIn) => __awaiter(void 0, void 0, void 0, function* () {
-        if (!isLoggedIn) {
-            yield login()
-                .catch(() => __awaiter(void 0, void 0, void 0, function* () {
-                yield gotoTweets();
-            }))
-                .then(() => __awaiter(void 0, void 0, void 0, function* () {
-                yield gotoTweets();
-            }));
-        }
-    }));
 });
 let replyTweets = () => __awaiter(void 0, void 0, void 0, function* () {
     tweets = [];
@@ -199,7 +245,7 @@ let replyTweets = () => __awaiter(void 0, void 0, void 0, function* () {
             id = yield pageTweet.$eval("div a", a => a.getAttribute("href"));
         }
         if (id != null) {
-            if (tweetsReplied.find(it => it == id) == null) {
+            if (tweetsReplied.find(it => it == id) == null && failedReplies.find(it => it == id) == null) {
                 tweets.push(new Tweet(id, pageTweet));
             }
         }
@@ -228,33 +274,24 @@ let gotoTweets = () => __awaiter(void 0, void 0, void 0, function* () {
     yield sleepFor(1000, 2000);
     yield replyTweets();
 });
-let writeDataToSheet = () => {
-    let fileName = excelSheetDir + tweetsFileName;
-    let ws = XLSX.utils.json_to_sheet(tweetData);
-    let wb;
-    try {
-        wb = XLSX.readFile(fileName);
-    }
-    catch (_a) {
-        wb = XLSX.utils.book_new();
-    }
-    XLSX.utils.book_append_sheet(wb, ws, searchTag);
-    XLSX.writeFile(wb, fileName);
-};
 let main = () => __awaiter(void 0, void 0, void 0, function* () {
-    var _b;
+    var _g;
     let paramsStr = fs_1.default.readFileSync(paramsFile, "utf-8");
-    let params = JSON.parse(paramsStr);
-    if (params.searchTag == null || params.reply == null || params.searchTag.trim().length == 0 || params.reply.trim().length == 0) {
+    params = JSON.parse(paramsStr);
+    if (params.searchTag == null || params.reply == null || params.searchTag.trim().length == 0) {
         console.log("Required parameters are missing");
         return;
     }
     searchTag = params.searchTag;
-    reply = params.reply;
+    reply = JSON.parse(JSON.stringify(params.reply));
+    if (reply.length == 0) {
+        console.log("No replies given");
+        return;
+    }
     try {
         replyLimit = params.limit;
     }
-    catch (_c) {
+    catch (_h) {
         replyLimit = 0;
     }
     if (!fs_1.default.existsSync(dataDir)) {
@@ -267,12 +304,15 @@ let main = () => __awaiter(void 0, void 0, void 0, function* () {
     if (!fs_1.default.existsSync(excelSheetDir)) {
         fs_1.default.mkdirSync(excelSheetDir, { recursive: true });
     }
+    if (!fs_1.default.existsSync(errorDir)) {
+        fs_1.default.mkdirSync(errorDir, { recursive: true });
+    }
     if (!fs_1.default.existsSync(excelSheetDir + tweetsFileName)) {
         worksheet = workbook.addWorksheet(searchTag);
     }
     else {
         yield workbook.xlsx.readFile(excelSheetDir + tweetsFileName);
-        worksheet = (_b = workbook.worksheets.find(it => it.name == searchTag)) !== null && _b !== void 0 ? _b : workbook.addWorksheet(searchTag);
+        worksheet = (_g = workbook.worksheets.find(it => it.name == searchTag)) !== null && _g !== void 0 ? _g : workbook.addWorksheet(searchTag);
     }
     worksheet.columns = [
         { header: 'Tweet Link', key: 'tweet', width: 20 },
